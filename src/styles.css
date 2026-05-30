@@ -1,0 +1,84 @@
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 16px;
+}
+
+.stat-card h2 {
+  margin: 8px 0 0;
+  color: #ff4da6;
+}
+
+.patient-card {
+  border-left: 5px solid #ff4da6;
+}
+
+.patient-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.patient-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.label,
+.muted {
+  color: #ffe7f5;
+  opacity: 0.9;
+  font-size: 14px;
+}
+
+.status-pill {
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: bold;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.adherence-row {
+  display: flex;
+  justify-content: space-between;
+  max-width: 420px;
+  margin-bottom: 6px;
+}
+
+.insight-box {
+  background: rgba(255, 77, 166, 0.12);
+  border: 1px solid rgba(255, 231, 245, 0.35);
+  border-radius: 12px;
+  padding: 12px;
+  max-width: 650px;
+}
+
+.mini-section {
+  margin-top: 18px;
+  padding-top: 10px;
+  border-top: 1px solid #333;
+}
+
+.progress-wrap {
+  width: 100%;
+  max-width: 420px;
+  background: #222;
+  border-radius: 999px;
+  overflow: hidden;
+  height: 18px;
+  margin: 10px 0 16px;
+  border: 1px solid #ffe7f5;
+}
+
+.progress-bar {
+  height: 100%;
+  min-width: 8px;
+  background: linear-gradient(90deg, #ff4da6, #ffe7f5);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}

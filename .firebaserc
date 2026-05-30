@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "dripps-app"
+  },
+  "targets": {
+    "dripps-app": {
+      "hosting": {
+        "dosiq": [
+          "dosiq-app"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
