@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { localDateKey, readCalendarMonth, calendarLoadMessage } from "../calendarData";
 import { db, auth } from "../firebase";
 import {
   collection,
   query,
   where,
-  getDocs,
+  getDocsFromServer,
   addDoc,
   doc,
   updateDoc
@@ -24,73 +25,56 @@ const dayNames = [
 const shortDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export default function Calendar() {
-  const [protocols, setProtocols] = useState([]);
-  const [logs, setLogs] = useState([]);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [loading, setLoading] = useState(true);
+  const [userId, setUserId] = useState(null);
+  const [data, setData] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [retry, setRetry] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState(null);
+  const savePending = useRef(false);
+  const monthKey = localDateKey(currentDate).slice(0, 7);
+  const scope = `${userId || ""}|${monthKey}`;
+  const dataReady = !!userId && auth.currentUser?.uid === userId && data?.scope === scope;
+  const protocols = dataReady ? data.protocols : [];
+  const logs = dataReady ? data.logs : [];
 
   const [manualProtocolId, setManualProtocolId] = useState("");
   const [manualTaken, setManualTaken] = useState(true);
   const [manualNotes, setManualNotes] = useState("");
   const [manualSideEffects, setManualSideEffects] = useState("");
+  const formatDate = localDateKey;
 
-  const formatDate = (date) => date.toISOString().split("T")[0];
-
-  const loadData = async (user) => {
-    try {
-      const protocolQuery = query(
-        collection(db, "protocols"),
-        where("userId", "==", user.uid)
-      );
-
-      const logsQuery = query(
-        collection(db, "logs"),
-        where("userId", "==", user.uid)
-      );
-
-      const protocolSnap = await getDocs(protocolQuery);
-      const logsSnap = await getDocs(logsQuery);
-
-      const protocolData = protocolSnap.docs.map((docSnap) => ({
-        id: docSnap.id,
-        ...docSnap.data()
-      }));
-
-      const logData = logsSnap.docs.map((docSnap) => ({
-        id: docSnap.id,
-        ...docSnap.data()
-      }));
-
-      setProtocols(protocolData);
-      setLogs(logData);
-
-      if (!manualProtocolId && protocolData.length > 0) {
-        setManualProtocolId(protocolData[0].id);
-      }
-
-      setLoading(false);
-    } catch (error) {
-      console.error("Calendar load error:", error);
-      alert(error.message);
-      setLoading(false);
-    }
-  };
+  useEffect(() => onAuthStateChanged(auth, (user) => {
+    setUserId(user?.uid || null);
+    setData(null);
+    setLoadError(null);
+    setSaveMessage(null);
+    setManualProtocolId("");
+    setManualNotes("");
+    setManualSideEffects("");
+  }), []);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (!user) {
-        setProtocols([]);
-        setLogs([]);
-        setLoading(false);
-        return;
-      }
-
-      await loadData(user);
-    });
-
-    return () => unsubscribe();
-  }, []);
+    let active = true;
+    setLoadError(null);
+    setData(null);
+    if (!userId) return () => { active = false; };
+    const date = new Date(`${monthKey}-01T12:00:00`);
+    readCalendarMonth(db, userId, date, { collection, query, where, getDocsFromServer })
+      .then((result) => {
+        if (!active || auth.currentUser?.uid !== userId) return;
+        setData({ ...result, scope });
+        setManualProtocolId((id) => result.protocols.some((p) => p.id === id)
+          ? id : result.protocols[0]?.id || "");
+      })
+      .catch((error) => {
+        if (active && auth.currentUser?.uid === userId) setLoadError({ scope, message: calendarLoadMessage(error) });
+      });
+    // Results from an old month or signed-out account may not repaint this view.
+    return () => { active = false; };
+  }, [userId, monthKey, scope, retry]);
 
   const getProtocolsForDate = (date) => {
     const dayName = dayNames[date.getDay()];
@@ -134,49 +118,46 @@ export default function Calendar() {
     notes,
     sideEffects
   }) => {
+    const owner = auth.currentUser?.uid;
+    if (!owner || owner !== userId || !dataReady || savePending.current) return;
+    if (!protocols.some((protocol) => protocol.id === protocolId)) return;
+    savePending.current = true;
+    setSaving(true);
+    setSaveMessage(null);
     try {
-      if (!auth.currentUser) {
-        alert("No user logged in");
-        return;
-      }
-
-      if (!protocolId) {
-        alert("Please choose a protocol.");
-        return;
-      }
-
       const existingLog = getLogForProtocolDate(protocolId, date);
-
+      const changes = { taken, notes: notes || "", sideEffects: sideEffects || "" };
+      let savedLog;
       if (existingLog) {
-        await updateDoc(doc(db, "logs", existingLog.id), {
-          taken,
-          notes: notes || "",
-          sideEffects: sideEffects || "",
-          updatedAt: new Date().toISOString()
-        });
-
-        alert("Log updated!");
+        const updatedAt = new Date().toISOString();
+        await updateDoc(doc(db, "logs", existingLog.id), { ...changes, updatedAt });
+        savedLog = { ...existingLog, ...changes, updatedAt };
       } else {
-        await addDoc(collection(db, "logs"), {
-          userId: auth.currentUser.uid,
-          protocolId,
-          date: formatDate(date),
-          time: new Date().toLocaleTimeString(),
-          taken,
-          notes: notes || "",
-          sideEffects: sideEffects || "",
+        const entry = {
+          userId: owner, protocolId, date: formatDate(date),
+          time: new Date().toLocaleTimeString(), ...changes,
           createdAt: new Date().toISOString()
-        });
-
-        alert("Log saved!");
+        };
+        const receipt = await addDoc(collection(db, "logs"), entry);
+        savedLog = { ...entry, id: receipt.id };
       }
-
+      if (auth.currentUser?.uid !== owner) return;
+      // Apply only the acknowledged save; do not download the full history again.
+      setData((current) => current?.scope !== scope ? current : {
+        ...current,
+        logs: [...current.logs.filter((log) => log.id !== savedLog.id), savedLog]
+      });
       setManualNotes("");
       setManualSideEffects("");
-
-      await loadData(auth.currentUser);
+      setSaveMessage({ scope, message: existingLog ? "Log updated." : "Log saved." });
     } catch (error) {
-      alert(error.message);
+      if (auth.currentUser?.uid === owner) {
+        setData(null);
+        setLoadError({ scope, message: "The save could not be confirmed. Reload the calendar to check before trying again." });
+      }
+    } finally {
+      savePending.current = false;
+      setSaving(false);
     }
   };
 
@@ -230,15 +211,15 @@ export default function Calendar() {
   }
 
   const goPrevious = () => {
-    setCurrentDate(
-      new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1)
-    );
+    const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
+    setCurrentDate(date);
+    setSelectedDate(date);
   };
 
   const goNext = () => {
-    setCurrentDate(
-      new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1)
-    );
+    const date = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
+    setCurrentDate(date);
+    setSelectedDate(date);
   };
 
   const goToday = () => {
@@ -259,15 +240,19 @@ export default function Calendar() {
       ? 0
       : Math.round((selectedScheduledCompleted / selectedProtocols.length) * 100);
 
-  if (loading) {
-    return <div className="container">Loading calendar...</div>;
-  }
-
   return (
     <div className="container">
       <h1>Calendar</h1>
 
-      <div className="dashboard-grid">
+      {!dataReady && <div className="card" role={loadError?.scope === scope ? "alert" : "status"}>
+        {loadError?.scope === scope ? <>
+          <p>{loadError.message}</p>
+          <button onClick={() => setRetry((value) => value + 1)}>Retry calendar</button>
+        </> : <p>{userId ? "Loading calendar..." : "Sign in to view your calendar."}</p>}
+      </div>}
+      {saveMessage?.scope === scope && <p role="status">{saveMessage.message}</p>}
+
+      {dataReady && <div className="dashboard-grid">
         <div className="card stat-card">
           <p className="label">Selected Date</p>
           <h2>{formatDate(selectedDate)}</h2>
@@ -287,13 +272,13 @@ export default function Calendar() {
           <p className="label">Selected Day Adherence</p>
           <h2>{selectedAdherence}%</h2>
         </div>
-      </div>
+      </div>}
 
-      <div className="card">
+      <div className="card" aria-busy={!dataReady && loadError?.scope !== scope}>
         <div className="calendar-actions">
-          <button onClick={goPrevious}>Previous</button>
-          <button onClick={goToday}>Today</button>
-          <button onClick={goNext}>Next</button>
+          <button onClick={goPrevious} disabled={saving}>Previous</button>
+          <button onClick={goToday} disabled={saving}>Today</button>
+          <button onClick={goNext} disabled={saving}>Next</button>
         </div>
 
         <h2>
@@ -329,6 +314,7 @@ export default function Calendar() {
                     ? "calendar-day calendar-day-selected"
                     : "calendar-day"
                 }
+                disabled={saving}
                 onClick={() => setSelectedDate(date)}
               >
                 <span>{date.getDate()}</span>
@@ -350,6 +336,7 @@ export default function Calendar() {
         </div>
       </div>
 
+      {dataReady && <>
       <div className="card">
         <h2>Add / Edit Log for Selected Day</h2>
 
@@ -358,6 +345,8 @@ export default function Calendar() {
         ) : (
           <>
             <select
+              disabled={saving}
+              aria-label="Protocol"
               value={manualProtocolId}
               onChange={(e) => setManualProtocolId(e.target.value)}
             >
@@ -369,6 +358,8 @@ export default function Calendar() {
             </select>
 
             <select
+              disabled={saving}
+              aria-label="Log status"
               value={manualTaken ? "taken" : "missed"}
               onChange={(e) => setManualTaken(e.target.value === "taken")}
             >
@@ -377,19 +368,21 @@ export default function Calendar() {
             </select>
 
             <input
+              disabled={saving}
               placeholder="Notes for this dose"
               value={manualNotes}
               onChange={(e) => setManualNotes(e.target.value)}
             />
 
             <input
+              disabled={saving}
               placeholder="Side effects or symptoms"
               value={manualSideEffects}
               onChange={(e) => setManualSideEffects(e.target.value)}
             />
 
             <div className="protocol-actions">
-              <button onClick={saveManualLog}>Save Calendar Log</button>
+              <button onClick={saveManualLog} disabled={saving}>{saving ? "Saving..." : "Save Calendar Log"}</button>
             </div>
           </>
         )}
@@ -467,7 +460,7 @@ export default function Calendar() {
 
               {!done && (
                 <div className="protocol-actions">
-                  <button onClick={() => quickLogDose(protocol, selectedDate)}>
+                  <button disabled={saving} onClick={() => quickLogDose(protocol, selectedDate)}>
                     Mark Dose Taken
                   </button>
                 </div>
@@ -499,6 +492,7 @@ export default function Calendar() {
           </div>
         )}
       </div>
+      </>}
     </div>
   );
 }
