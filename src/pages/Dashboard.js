@@ -1,3 +1,4 @@
+import { localDateKey } from "../calendarData";
 import { useEffect, useState } from "react";
 import { db, auth } from "../firebase";
 import {
@@ -32,7 +33,7 @@ export default function Dashboard() {
   const [dismissedPopupForSession, setDismissedPopupForSession] =
     useState(false);
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = localDateKey();
 
   const loadData = async (user) => {
     try {
@@ -209,7 +210,7 @@ export default function Dashboard() {
     const date = new Date();
     date.setDate(date.getDate() - (6 - index));
 
-    const dateString = date.toISOString().split("T")[0];
+    const dateString = localDateKey(date);
 
     const completed = logs.filter(
       (log) => log.date === dateString && log.taken === true
@@ -225,7 +226,7 @@ export default function Dashboard() {
     const date = new Date();
     date.setDate(date.getDate() - (6 - index));
 
-    const dateString = date.toISOString().split("T")[0];
+    const dateString = localDateKey(date);
     const dayName = date.toLocaleDateString("en-US", { weekday: "long" });
 
     const scheduled = activeProtocols.filter(
